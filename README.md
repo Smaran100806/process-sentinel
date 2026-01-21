@@ -11,3 +11,6 @@ A Linux system daemon written in C that monitors processes in real-time by parsi
 ```bash
 make
 ./sentinel
+
+python3 tests/chaos_monkey.py zombie
+python3 tests/chaos_monkey.py mem
