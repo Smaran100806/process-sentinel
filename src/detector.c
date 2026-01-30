@@ -9,9 +9,9 @@ static int prev_process_count = 0;
 void check_fork_bomb(int current_proc_count) {
     if (prev_process_count > 0) {
         int diff = current_proc_count - prev_process_count;
-        if (diff > 50) { // Threshold: 50+ processes in one cycle
+        if (diff > 50) { 
             char msg[128];
-            snprintf(msg, sizeof(msg), "Process spike detected: +%d processes (Possible Fork Bomb)", diff);
+            snprintf(msg, sizeof(msg), "Process spike: +%d procs (Possible Fork Bomb)", diff);
             log_alert(LOG_DANGER, msg, 0);
         }
     }
@@ -21,20 +21,21 @@ void check_fork_bomb(int current_proc_count) {
 void check_zombie(ProcessInfo p) {
     if (p.state == 'Z') {
         char msg[128];
-        snprintf(msg, sizeof(msg), "Zombie process detected (Parent PID: %d)", p.ppid);
+        snprintf(msg, sizeof(msg), "Zombie detected (Name: %s, Parent: %d)", p.name, p.ppid);
         log_alert(LOG_WARNING, msg, p.pid);
     }
 }
 
 void check_memory_hog(ProcessInfo p) {
-    // Self-protection: Ignore the sentinel itself
     if (p.pid == getpid()) return;
 
-    // RSS is in pages (typically 4KB). 
-    // Threshold: > 100MB (~25600 pages)
-    if (p.rss > 25600) {
+    // Dynamically calculate page size
+    long page_size_kb = sysconf(_SC_PAGESIZE) / 1024;
+    long rss_mb = (p.rss * page_size_kb) / 1024;
+
+    if (rss_mb > 100) { // Threshold: 100MB
         char msg[128];
-        snprintf(msg, sizeof(msg), "High Memory Usage detected: %ld pages", p.rss);
+        snprintf(msg, sizeof(msg), "High Memory: %ld MB (Process: %s)", rss_mb, p.name);
         log_alert(LOG_INFO, msg, p.pid);
     }
 }
