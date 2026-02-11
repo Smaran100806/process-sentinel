@@ -16,40 +16,24 @@ void handle_signal(int sig) {
     keep_running = 0;
 }
 
-int get_system_pid_max() {
-    FILE *f = fopen("/proc/sys/kernel/pid_max", "r");
-    int max_pids = 32768;
-    if (f) {
-        if (fscanf(f, "%d", &max_pids) != 1) max_pids = 32768;
-        fclose(f);
-    }
-    return max_pids + 1024;
-}
-
 void daemonize() {
     pid_t pid = fork();
     if (pid < 0) exit(EXIT_FAILURE);
     if (pid > 0) exit(EXIT_SUCCESS);
-
-    if (setsid() < 0) exit(EXIT_FAILURE);
-
+    setsid();
     signal(SIGCHLD, SIG_IGN);
     signal(SIGHUP, SIG_IGN);
-
     pid = fork();
     if (pid < 0) exit(EXIT_FAILURE);
     if (pid > 0) exit(EXIT_SUCCESS);
-
     umask(0);
-    if (chdir("/") < 0) exit(EXIT_FAILURE);
-
-    // Redirect standard streams to /dev/null
+    chdir("/");
     int fd = open("/dev/null", O_RDWR);
     if (fd != -1) {
         dup2(fd, STDIN_FILENO);
         dup2(fd, STDOUT_FILENO);
         dup2(fd, STDERR_FILENO);
-        if (fd > 2) close(fd);
+        close(fd);
     }
 }
 
@@ -60,26 +44,46 @@ int main(int argc, char *argv[]) {
     int is_daemon = (argc > 1 && strcmp(argv[1], "--daemon") == 0);
     if (is_daemon) daemonize();
 
-    int max_pids = get_system_pid_max();
-    int *pids = calloc(max_pids, sizeof(int));
-    if (!pids) return 1;
+    // Safety: Create logs directory if it doesn't exist
+    mkdir("logs", 0777);
 
-    init_logger();
-    if (!is_daemon) {
-        printf("--- Process Sentinel Started (PID: %d) ---\n", getpid());
-    }
+    int *pids = calloc(65536, sizeof(int));
+    init_logger(); // Initialize logger AFTER daemonization
 
     ProcessInfo p_info;
+    long page_size_kb = sysconf(_SC_PAGESIZE) / 1024;
+
     while (keep_running) {
-        int count = get_process_list(pids, max_pids);
+        int count = get_process_list(pids, 65536);
         check_fork_bomb(count);
+
+        if (!is_daemon) {
+            printf("\033[2J\033[H"); 
+            printf("\033[1;31m--- PROCESS SENTINEL: THREAT DASHBOARD ---\033[0m\n");
+            printf("%-8s %-15s %-10s %-10s\n", "PID", "NAME", "RSS(MB)", "TYPE");
+            printf("---------------------------------------------------\n");
+        }
 
         for (int i = 0; i < count; i++) {
             if (read_process_stat(pids[i], &p_info)) {
+                long rss_mb = (p_info.rss * page_size_kb) / 1024;
+                
+                // DASHBOARD: Shows Hogs (>500MB) or Zombies
+                if (!is_daemon) {
+                    if (p_info.state == 'Z' || rss_mb > 500) {
+                        char *type = (p_info.state == 'Z') ? "\033[1;33mZOMBIE\033[0m" : "\033[1;31mMEM_HOG\033[0m";
+                        printf("%-8d %-15s %-10ld %-10s\n", 
+                               p_info.pid, p_info.name, rss_mb, type);
+                    }
+                }
+                
+                // DETECTOR: Checks for Spikes (>100MB new or >10MB growth)
                 check_zombie(p_info);
                 check_memory_hog(p_info);
             }
         }
+
+        if (!is_daemon) printf("\nScanning %d procs... (Showing threats > 500MB)\n", count);
         sleep(2);
     }
 
